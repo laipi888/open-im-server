@@ -32,6 +32,7 @@ import (
 
 	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/db/cache"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/prommetrics"
 
 	"github.com/redis/go-redis/v9"
 
@@ -220,15 +221,11 @@ func (ws *WsServer) registerClient(client *Client) {
 	if !userOK {
 		ws.clients.Set(client.UserID, client)
 		log.ZDebug(client.ctx, "user not exist", "userID", client.UserID, "platformID", client.PlatformID)
+		prommetrics.OnlineUserGauge.Add(1)
 		ws.onlineUserNum.Add(1)
 		ws.onlineUserConnNum.Add(1)
 	} else {
-		i := &kickHandler{
-			clientOK:   clientOK,
-			oldClients: oldClients,
-			newClient:  client,
-		}
-		ws.kickHandlerChan <- i
+		ws.multiTerminalLoginChecker(clientOK, oldClients, client)
 		log.ZDebug(client.ctx, "user exist", "userID", client.UserID, "platformID", client.PlatformID)
 		if clientOK {
 			ws.clients.Set(client.UserID, client)
@@ -364,6 +361,7 @@ func (ws *WsServer) unregisterClient(client *Client) {
 	isDeleteUser := ws.clients.delete(client.UserID, client.ctx.GetRemoteAddr())
 	if isDeleteUser {
 		ws.onlineUserNum.Add(-1)
+		prommetrics.OnlineUserGauge.Dec()
 	}
 	ws.onlineUserConnNum.Add(-1)
 	ws.SetUserOnlineStatus(client.ctx, client, constant.Offline)

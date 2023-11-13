@@ -34,6 +34,7 @@ import (
 	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/db/cache"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/db/controller"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/prommetrics"
 	"github.com/openimsdk/open-im-server/v3/pkg/rpcclient"
 )
 
@@ -73,6 +74,7 @@ func (s *authServer) UserToken(ctx context.Context, req *pbauth.UserTokenReq) (*
 	if err != nil {
 		return nil, err
 	}
+	prommetrics.UserLoginCounter.Inc()
 	resp.Token = token
 	resp.ExpireTimeSeconds = config.Config.TokenPolicy.Expire * 24 * 60 * 60
 	return &resp, nil

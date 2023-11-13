@@ -16,20 +16,25 @@ package startrpc
 
 import (
 	"fmt"
+	"log"
 	"net"
+	"net/http"
 	"strconv"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/discovery_register"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/prommetrics"
 
 	grpcprometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
+	kdisc "github.com/openimsdk/open-im-server/v3/pkg/common/discoveryregister"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/OpenIMSDK/tools/discoveryregistry"
 	"github.com/OpenIMSDK/tools/mw"
 	"github.com/OpenIMSDK/tools/network"
-	"github.com/OpenIMSDK/tools/prome"
 	"github.com/OpenIMSDK/tools/utils"
 )
 
@@ -41,7 +46,7 @@ func Start(
 	rpcFn func(client discoveryregistry.SvcDiscoveryRegistry, server *grpc.Server) error,
 	options ...grpc.ServerOption,
 ) error {
-	fmt.Printf("start %s server, port: %d, prometheusPort: %d, OpenIM version: %s",
+	fmt.Printf("start %s server, port: %d, prometheusPort: %d, OpenIM version: %s\n",
 		rpcRegisterName, rpcPort, prometheusPort, config.Version)
 	listener, err := net.Listen(
 		"tcp",
@@ -51,7 +56,7 @@ func Start(
 		return err
 	}
 	defer listener.Close()
-	client, err := discovery_register.NewDiscoveryRegister(config.Config.Envs.Discovery)
+	client, err := kdisc.NewDiscoveryRegister(config.Config.Envs.Discovery)
 	if err != nil {
 		return utils.Wrap1(err)
 	}
@@ -61,16 +66,15 @@ func Start(
 	if err != nil {
 		return err
 	}
+	var reg *prometheus.Registry
+	var metric *grpcprometheus.ServerMetrics
 	// ctx 中间件
 	if config.Config.Prometheus.Enable {
-		prome.NewGrpcRequestCounter()
-		prome.NewGrpcRequestFailedCounter()
-		prome.NewGrpcRequestSuccessCounter()
-		unaryInterceptor := mw.InterceptChain(grpcprometheus.UnaryServerInterceptor, mw.RpcServerInterceptor)
-		options = append(options, []grpc.ServerOption{
-			grpc.StreamInterceptor(grpcprometheus.StreamServerInterceptor),
-			grpc.UnaryInterceptor(unaryInterceptor),
-		}...)
+		//////////////////////////
+		cusMetrics := prommetrics.GetGrpcCusMetrics(rpcRegisterName)
+		reg, metric, err = prommetrics.NewGrpcPromObj(cusMetrics)
+		options = append(options, mw.GrpcServer(), grpc.StreamInterceptor(metric.StreamServerInterceptor()),
+			grpc.UnaryInterceptor(metric.UnaryServerInterceptor()))
 	} else {
 		options = append(options, mw.GrpcServer())
 	}
@@ -91,8 +95,11 @@ func Start(
 	}
 	go func() {
 		if config.Config.Prometheus.Enable && prometheusPort != 0 {
-			if err := prome.StartPrometheusSrv(prometheusPort); err != nil {
-				panic(err.Error())
+			metric.InitializeMetrics(srv)
+			// Create a HTTP server for prometheus.
+			httpServer := &http.Server{Handler: promhttp.HandlerFor(reg, promhttp.HandlerOpts{}), Addr: fmt.Sprintf("0.0.0.0:%d", prometheusPort)}
+			if err := httpServer.ListenAndServe(); err != nil {
+				log.Fatal("Unable to start a http server.")
 			}
 		}
 	}()

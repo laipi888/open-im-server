@@ -21,7 +21,8 @@ import (
 	_ "net/http/pprof"
 	"strconv"
 
-	"github.com/openimsdk/open-im-server/v3/pkg/common/discovery_register"
+	ginProm "github.com/openimsdk/open-im-server/v3/pkg/common/ginprometheus"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/prommetrics"
 
 	"github.com/OpenIMSDK/protocol/constant"
 	"github.com/OpenIMSDK/tools/discoveryregistry"
@@ -31,6 +32,7 @@ import (
 	"github.com/openimsdk/open-im-server/v3/pkg/common/cmd"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/db/cache"
+	kdisc "github.com/openimsdk/open-im-server/v3/pkg/common/discoveryregister"
 )
 
 func main() {
@@ -43,11 +45,11 @@ func main() {
 	}
 }
 
-func run(port int) error {
-	log.ZInfo(context.Background(), "Openim api port:", "port", port)
+func run(port int, proPort int) error {
+	log.ZInfo(context.Background(), "Openim api port:", "port", port, "proPort", proPort)
 
-	if port == 0 {
-		err := "port is empty"
+	if port == 0 || proPort == 0 {
+		err := "port or proPort is empty:" + strconv.Itoa(port) + "," + strconv.Itoa(proPort)
 		log.ZError(context.Background(), err, nil)
 
 		return fmt.Errorf(err)
@@ -63,7 +65,7 @@ func run(port int) error {
 	var client discoveryregistry.SvcDiscoveryRegistry
 
 	// Determine whether zk is passed according to whether it is a clustered deployment
-	client, err = discovery_register.NewDiscoveryRegister(config.Config.Envs.Discovery)
+	client, err = kdisc.NewDiscoveryRegister(config.Config.Envs.Discovery)
 	if err != nil {
 		log.ZError(context.Background(), "Failed to initialize discovery register", err)
 
@@ -82,6 +84,13 @@ func run(port int) error {
 	}
 	log.ZInfo(context.Background(), "api register public config to discov success")
 	router := api.NewGinRouter(client, rdb)
+	//////////////////////////////
+	if config.Config.Prometheus.Enable {
+		p := ginProm.NewPrometheus("app", prommetrics.GetGinCusMetrics("Api"))
+		p.SetListenAddress(fmt.Sprintf(":%d", proPort))
+		p.Use(router)
+	}
+	/////////////////////////////////
 	log.ZInfo(context.Background(), "api init router success")
 	var address string
 	if config.Config.Api.ListenIP != "" {

@@ -15,13 +15,17 @@
 package msgtransfer
 
 import (
+	"errors"
 	"fmt"
+	"log"
+	"net/http"
 	"sync"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-
-	"github.com/openimsdk/open-im-server/v3/pkg/common/discovery_register"
 
 	"github.com/OpenIMSDK/tools/mw"
 
@@ -31,7 +35,8 @@ import (
 	"github.com/openimsdk/open-im-server/v3/pkg/common/db/relation"
 	relationtb "github.com/openimsdk/open-im-server/v3/pkg/common/db/table/relation"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/db/unrelation"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/prome"
+	kdisc "github.com/openimsdk/open-im-server/v3/pkg/common/discoveryregister"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/prommetrics"
 	"github.com/openimsdk/open-im-server/v3/pkg/rpcclient"
 )
 
@@ -61,7 +66,7 @@ func StartTransfer(prometheusPort int) error {
 	if err := mongo.CreateMsgIndex(); err != nil {
 		return err
 	}
-	client, err := discovery_register.NewDiscoveryRegister(config.Config.Envs.Discovery)
+	client, err := kdisc.NewDiscoveryRegister(config.Config.Envs.Discovery)
 	/*
 		client, err := openkeeper.NewClient(config.Config.Zookeeper.ZkAddr, config.Config.Zookeeper.Schema,
 			openkeeper.WithFreq(time.Hour), openkeeper.WithRoundRobin(), openkeeper.WithUserNameAndPassword(config.Config.Zookeeper.Username,
@@ -81,7 +86,6 @@ func StartTransfer(prometheusPort int) error {
 	conversationRpcClient := rpcclient.NewConversationRpcClient(client)
 	groupRpcClient := rpcclient.NewGroupRpcClient(client)
 	msgTransfer := NewMsgTransfer(chatLogDatabase, msgDatabase, &conversationRpcClient, &groupRpcClient)
-	msgTransfer.initPrometheus()
 	return msgTransfer.Start(prometheusPort)
 }
 
@@ -95,21 +99,13 @@ func NewMsgTransfer(chatLogDatabase controller.ChatLogDatabase,
 	}
 }
 
-func (m *MsgTransfer) initPrometheus() {
-	prome.NewSeqGetSuccessCounter()
-	prome.NewSeqGetFailedCounter()
-	prome.NewSeqSetSuccessCounter()
-	prome.NewSeqSetFailedCounter()
-	prome.NewMsgInsertRedisSuccessCounter()
-	prome.NewMsgInsertRedisFailedCounter()
-	prome.NewMsgInsertMongoSuccessCounter()
-	prome.NewMsgInsertMongoFailedCounter()
-}
-
 func (m *MsgTransfer) Start(prometheusPort int) error {
 	var wg sync.WaitGroup
 	wg.Add(1)
 	fmt.Println("start msg transfer", "prometheusPort:", prometheusPort)
+	if prometheusPort <= 0 {
+		return errors.New("prometheusPort not correct")
+	}
 	if config.Config.ChatPersistenceMysql {
 		// go m.persistentCH.persistentConsumerGroup.RegisterHandleAndConsumer(m.persistentCH)
 	} else {
@@ -118,10 +114,21 @@ func (m *MsgTransfer) Start(prometheusPort int) error {
 	go m.historyCH.historyConsumerGroup.RegisterHandleAndConsumer(m.historyCH)
 	go m.historyMongoCH.historyConsumerGroup.RegisterHandleAndConsumer(m.historyMongoCH)
 	// go m.modifyCH.modifyMsgConsumerGroup.RegisterHandleAndConsumer(m.modifyCH)
-	err := prome.StartPrometheusSrv(prometheusPort)
+	/*err := prome.StartPrometheusSrv(prometheusPort)
 	if err != nil {
 		return err
+	}*/
+	////////////////////////////
+	if config.Config.Prometheus.Enable {
+		reg := prometheus.NewRegistry()
+		reg.MustRegister(
+			collectors.NewGoCollector(),
+		)
+		reg.MustRegister(prommetrics.GetGrpcCusMetrics("Transfer")...)
+		http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}))
+		log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", prometheusPort), nil))
 	}
+	////////////////////////////////////////
 	wg.Wait()
 	return nil
 }
